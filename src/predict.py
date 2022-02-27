@@ -1,11 +1,13 @@
-"""Usage: predict.py [-m MODEL] [-s BS] [-d DECODE] [-b BEAM] [IMAGE ...]
+"""Usage: predict.py [-m MODEL] [-s BS] [-d DECODE] [-b BEAM] [-l LM] [-w LMW] [IMAGE ...]
 
 -h, --help    show this
 -m MODEL     model file [default: ./checkpoints/crnn_synth90k.pt]
 -s BS       batch size [default: 256]
 -d DECODE    decode method (greedy, beam_search or prefix_beam_search) [default: beam_search]
 -b BEAM   beam size [default: 10]
-
+-v VOCAB  vocabrary file path
+-l LM     LM checkpoint path
+-w LMW    LM weights
 """
 from docopt import docopt
 import torch
@@ -16,9 +18,10 @@ from config import common_config as config
 from dataset import Synth90kDataset, synth90k_collate_fn
 from model import CRNN
 from ctc_decoder import ctc_decode
+from language_model import LitLstmLM
+import json
 
-
-def predict(crnn, dataloader, label2char, decode_method, beam_size):
+def predict(crnn, dataloader, label2char, decode_method, beam_size, language_model, language_model_weight):
     crnn.eval()
     pbar = tqdm(total=len(dataloader), desc="Predict")
 
@@ -33,7 +36,8 @@ def predict(crnn, dataloader, label2char, decode_method, beam_size):
             log_probs = torch.nn.functional.log_softmax(logits, dim=2)
 
             preds = ctc_decode(log_probs, method=decode_method, beam_size=beam_size,
-                               label2char=label2char)
+                               label2char=label2char,
+                               language_model=language_model, language_model_weight=language_model_weight)
             all_preds += preds
 
             pbar.update(1)
@@ -57,6 +61,9 @@ def main():
     batch_size = int(arguments['-s'])
     decode_method = arguments['-d']
     beam_size = int(arguments['-b'])
+    vocab_file_path = arguments['-v']
+    language_model_path = arguments['-l']
+    language_model_weight = float(arguments['-w'])
 
     img_height = config['img_height']
     img_width = config['img_width']
@@ -79,10 +86,15 @@ def main():
                 leaky_relu=config['leaky_relu'])
     crnn.load_state_dict(torch.load(reload_checkpoint, map_location=device))
     crnn.to(device)
-
+    with open(vocab_file_path) as fi:
+        vocab = json.load(fi)
+    language_model = LitLstmLM.load_from_checkpoint(language_model_path, vocab=vocab)
+    language_model.to(device)
     preds = predict(crnn, predict_loader, Synth90kDataset.LABEL2CHAR,
                     decode_method=decode_method,
-                    beam_size=beam_size)
+                    beam_size=beam_size,
+                    language_model=language_model,
+                    language_model_weight=language_model_weight)
 
     show_result(images, preds)
 

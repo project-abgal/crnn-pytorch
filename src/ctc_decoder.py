@@ -31,6 +31,8 @@ def greedy_decode(emission_log_prob, blank=0, **kwargs):
 def beam_search_decode(emission_log_prob, blank=0, **kwargs):
     beam_size = kwargs['beam_size']
     emission_threshold = kwargs.get('emission_threshold', np.log(DEFAULT_EMISSION_THRESHOLD))
+    language_model = kwargs.get('language_model', None)
+    language_model_weight = kwargs.get('language_model_weight', 0)
 
     length, class_count = emission_log_prob.shape
 
@@ -59,8 +61,20 @@ def beam_search_decode(emission_log_prob, blank=0, **kwargs):
         total_accu_log_prob[labels] = \
             logsumexp([accu_log_prob, total_accu_log_prob.get(labels, NINF)])
 
-    labels_beams = [(list(labels), accu_log_prob)
-                    for labels, accu_log_prob in total_accu_log_prob.items()]
+    labels_beams = []
+    for labels, accu_log_prob in total_accu_log_prob.items():
+        if language_model:
+            language_model_x = torch.Tensor([labels[:-1]]).to(torch.int)
+            language_model_y = torch.Tensor([labels[1:]]).to(torch.int)
+            language_model_output = language_model(language_model_x)
+            vocab_size = language_model_output_prob.size()[-1]
+            lanuage_model_prob = torch.nn.functional.nll_loss(
+                    torch.nn.functional.log_softmax(language_model_output, dim=-1).contiguous().view(-1, vocab_size),
+                    language_model_y.contiguous().view(-1).to(torch.long),
+                    reduction='sum',
+                    ignore_index=language_model.pad)
+            accu_log_prob += language_model_weight * lanuage_model_prob.item()
+        labels_beams.append((list(labels), accu_log_prob))
     labels_beams.sort(key=lambda x: x[1], reverse=True)
     labels = labels_beams[0][0]
 
@@ -125,7 +139,8 @@ def prefix_beam_decode(emission_log_prob, blank=0, **kwargs):
     return labels
 
 
-def ctc_decode(log_probs, label2char=None, blank=0, method='beam_search', beam_size=10):
+def ctc_decode(log_probs, label2char=None, blank=0, method='beam_search', beam_size=10,
+                language_model=None, language_model_weight=0.01):
     emission_log_probs = np.transpose(log_probs.cpu().numpy(), (1, 0, 2))
     # size of emission_log_probs: (batch, length, class)
 
@@ -138,7 +153,8 @@ def ctc_decode(log_probs, label2char=None, blank=0, method='beam_search', beam_s
 
     decoded_list = []
     for emission_log_prob in emission_log_probs:
-        decoded = decoder(emission_log_prob, blank=blank, beam_size=beam_size)
+        decoded = decoder(emission_log_prob, blank=blank, beam_size=beam_size
+            language_model=language_model, language_model_weight=0.01)
         if label2char:
             decoded = [label2char[l] for l in decoded]
         decoded_list.append(decoded)
